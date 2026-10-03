@@ -2,28 +2,23 @@ const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
 const { createClient } = require('@supabase/supabase-js');
-require('dotenv').config();
 
 const app = express();
-const upload = multer({ storage: multer.memoryStorage() });
 
-// Cliente de Supabase
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
-
-// Middleware
-app.use(cors({ origin: process.env.FRONTEND_URL || '*' }));
+// Configuración de CORS y middleware
+app.use(cors());
 app.use(express.json());
 
-// ==========================================
-// 1. ENDPOINT PÚBLICO: Obtener todos los muebles
-// ==========================================
+// Configuración de Supabase
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+
+// Multer en memoria para manejar las imágenes recibidas
+const upload = multer({ storage: multer.memoryStorage() });
+
+// 1. RUTA GET (Obtener productos)
 app.get('/api/muebles', async (req, res) => {
     try {
-        const { data, error } = await supabase
-            .from('muebles')
-            .select('*')
-            .order('id', { ascending: true });
-
+        const { data, error } = await supabase.from('muebles').select('*');
         if (error) throw error;
         res.json(data);
     } catch (err) {
@@ -31,101 +26,49 @@ app.get('/api/muebles', async (req, res) => {
     }
 });
 
-// ==========================================
-// 2. ENDPOINT ADMIN: Login de Administrador
-// ==========================================
-app.post('/api/admin/login', async (req, res) => {
-    const { email, password } = req.body;
-
+// 2. RUTA POST (Crear producto) -> Esta es la que faltaba y daba 404
+app.post('/api/muebles', upload.array('imagenes'), async (req, res) => {
     try {
-        const { data, error } = await supabase.auth.signInWithPassword({
-            email,
-            password
-        });
+        const { nombre, categoria, precio, anterior, cuotas, stock, descripcion } = req.body;
+        const files = req.files || [];
+        const imageUrls = [];
 
-        if (error) return res.status(401).json({ error: 'Credenciales inválidas' });
+        // Subir cada imagen a Supabase Storage (asegúrate de tener un bucket público llamado "muebles")
+        for (const file of files) {
+            const fileName = `${Date.now()}-${file.originalname}`;
+            const { data, error } = await supabase.storage
+                .from('muebles')
+                .upload(fileName, file.buffer, { contentType: file.mimetype });
 
-        res.json({
-            message: 'Login exitoso',
-            token: data.session.access_token,
-            user: data.user
-        });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
+            if (error) throw error;
 
-// ==========================================
-// 3. ENDPOINT ADMIN: Crear Mueble + Subir Fotos a Storage
-// ==========================================
-app.post('/api/admin/muebles', upload.array('imagenes', 5), async (req, res) => {
-    try {
-        const token = req.headers.authorization?.split(' ')[1];
-        if (!token) return res.status(401).json({ error: 'No autorizado' });
+            // Obtener la URL pública de la imagen
+            const { data: publicUrlData } = supabase.storage
+                .from('muebles')
+                .getPublicUrl(fileName);
 
-        // Validar sesión en Supabase
-        const { data: userData, error: authError } = await supabase.auth.getUser(token);
-        if (authError || !userData.user) {
-            return res.status(401).json({ error: 'Token inválido o expirado' });
+            imageUrls.push(publicUrlData.publicUrl);
         }
 
-        const {
-            nombre, categoria, anterior, precio, descuento,
-            cuotas, valor_cuota, vendidos, stock, descripcion, caracteristicas
-        } = req.body;
-
-        const imagenesUrls = [];
-
-        // Subir cada imagen a Supabase Storage
-        if (req.files && req.files.length > 0) {
-            for (const file of req.files) {
-                const filename = `mueble-${Date.now()}-${Math.round(Math.random() * 1e9)}.${file.mimetype.split('/')[1]}`;
-
-                const { data: uploadData, error: uploadError } = await supabase.storage
-                    .from('muebles-fotos')
-                    .upload(filename, file.buffer, {
-                        contentType: file.mimetype
-                    });
-
-                if (uploadError) throw uploadError;
-
-                // Obtener la URL pública del archivo subido
-                const { data: urlData } = supabase.storage
-                    .from('muebles-fotos')
-                    .getPublicUrl(filename);
-
-                imagenesUrls.push(urlData.publicUrl);
-            }
-        }
-
-        // Insertar mueble en la base de datos
-        const { data: nuevoMueble, error: dbError } = await supabase
+        // Insertar el producto en la tabla 'muebles' de Supabase
+        const { data, error } = await supabase
             .from('muebles')
             .insert([{
                 nombre,
                 categoria,
-                imagenes: imagenesUrls,
-                anterior: Number(anterior) || 0,
-                precio: Number(precio),
-                descuento: Number(descuento) || 0,
-                cuotas: Number(cuotas) || 1,
-                valor_cuota: Number(valor_cuota) || Number(precio),
-                vendidos: vendidos || 'Nuevo',
-                stock: Number(stock) || 1,
+                precio: parseFloat(precio),
+                anterior: anterior ? parseFloat(anterior) : null,
+                cuotas: parseInt(cuotas),
+                stock: parseInt(stock),
                 descripcion,
-                caracteristicas: typeof caracteristicas === 'string' ? JSON.parse(caracteristicas) : caracteristicas
-            }])
-            .select();
+                imagenes: imageUrls
+            }]);
 
-        if (dbError) throw dbError;
+        if (error) throw error;
 
-        res.status(201).json({
-            message: 'Mueble creado correctamente',
-            mueble: nuevoMueble[0]
-        });
-
+        res.status(201).json({ mensaje: "Producto guardado con éxito", data });
     } catch (err) {
-        console.error(err);
+        console.error("Error al guardar mueble:", err);
         res.status(500).json({ error: err.message });
     }
 });
