@@ -18,7 +18,11 @@ const upload = multer({ storage: multer.memoryStorage() });
 // 1. RUTA GET (Obtener productos)
 app.get('/api/muebles', async (req, res) => {
     try {
-        const { data, error } = await supabase.from('muebles').select('*');
+        const { data, error } = await supabase
+            .from('muebles')
+            .select('*')
+            .order('id', { ascending: false }); // Muestra los más nuevos primero
+            
         if (error) throw error;
         res.json(data);
     } catch (err) {
@@ -26,31 +30,39 @@ app.get('/api/muebles', async (req, res) => {
     }
 });
 
-// 2. RUTA POST (Crear producto) -> Esta es la que faltaba y daba 404
+// 2. RUTA POST (Crear producto)
 app.post('/api/muebles', upload.array('imagenes'), async (req, res) => {
     try {
         const { nombre, categoria, precio, anterior, cuotas, stock, descripcion } = req.body;
         const files = req.files || [];
         const imageUrls = [];
 
-        // Subir cada imagen a Supabase Storage (asegúrate de tener un bucket público llamado "muebles")
+        // Subir cada imagen a Supabase Storage
         for (const file of files) {
-            const fileName = `${Date.now()}-${file.originalname}`;
-            const { data, error } = await supabase.storage
+            // Limpia el nombre del archivo para evitar espacios y caracteres especiales en la URL
+            const cleanFileName = file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_');
+            const fileName = `${Date.now()}-${cleanFileName}`;
+
+            const { data: uploadData, error: uploadError } = await supabase.storage
                 .from('muebles')
-                .upload(fileName, file.buffer, { contentType: file.mimetype });
+                .upload(fileName, file.buffer, { 
+                    contentType: file.mimetype,
+                    upsert: true 
+                });
 
-            if (error) throw error;
+            if (uploadError) throw uploadError;
 
-            // Obtener la URL pública de la imagen
+            // Obtener la URL pública limpia
             const { data: publicUrlData } = supabase.storage
                 .from('muebles')
                 .getPublicUrl(fileName);
 
-            imageUrls.push(publicUrlData.publicUrl);
+            if (publicUrlData && publicUrlData.publicUrl) {
+                imageUrls.push(publicUrlData.publicUrl);
+            }
         }
 
-        // Insertar el producto en la tabla 'muebles' de Supabase
+        // Insertar el producto en la tabla 'muebles'
         const { data, error } = await supabase
             .from('muebles')
             .insert([{
@@ -58,11 +70,12 @@ app.post('/api/muebles', upload.array('imagenes'), async (req, res) => {
                 categoria,
                 precio: parseFloat(precio),
                 anterior: anterior ? parseFloat(anterior) : null,
-                cuotas: parseInt(cuotas),
-                stock: parseInt(stock),
+                cuotas: cuotas ? parseInt(cuotas) : 1,
+                stock: stock ? parseInt(stock) : 0,
                 descripcion,
                 imagenes: imageUrls
-            }]);
+            }])
+            .select(); // Asegura devolver el objeto recién creado
 
         if (error) throw error;
 
